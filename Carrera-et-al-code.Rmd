@@ -1,0 +1,1437 @@
+---
+title: "Code for Carrera et al. AJHB 2026"
+author: "Sofia Carrera"
+date: "2025-09-15"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+### Load packages
+```{r lib}
+library(tidyverse)
+library(MASS)
+library(glmmTMB)
+library(DHARMa)
+library(discSurv)
+library(survival)
+library(survminer)
+```
+
+Function for transparent colors
+```{r make transparent}
+makeTransparent <- function(black, alpha = 150){
+  newColor <- col2rgb(black)
+  apply(newColor, 2, function(curcoldata)         
+  {rgb(red = curcoldata[1],
+       green = curcoldata[2],
+       blue = curcoldata[3],
+       alpha = alpha,
+       maxColorValue=  255)})
+}
+```
+
+Custom ggplot theme
+```{r custom theme}
+### center title
+custom_theme <- function() {
+  theme_survminer() %+replace%
+    theme(
+      plot.title=element_text(hjust=0.5),
+      plot.subtitle=element_text(hjust=0.5)
+    )
+}
+```
+
+
+## Load anonymized dataset
+
+Analysis dataset (1288 IC w/ ACEs and LH data)
+```{r}
+ACEs <- read.csv("Anon-LH-data.csv", header = T, stringsAsFactors = F)
+
+length(unique(ACEs$IC)) # anonymized
+length(unique(ACEs$brgy)) # anonymized 
+
+ACEs$icsex <- factor(ACEs$icsex)
+
+table(ACEs$icsex) / nrow(ACEs)
+```
+
+
+## Descriptive stats 
+
+### 1) ACEs frequency (cumulative and dimensions)
+
+```{r prop}
+### ACEs
+ACEs %>%
+  group_by(cumaces) %>%
+  summarise(N = n(), Percent = (n() / nrow(ACEs)) * 100)
+
+### Threat
+sum(ACEs$n_threat != 0) / nrow(ACEs) 
+
+### Deprivation
+sum(ACEs$n_deprivation != 0) / nrow(ACEs) 
+
+```
+
+
+##### Fig. 1
+Number of ACEs reported by sex
+
+```{r fig 1}
+## colors
+tred <- makeTransparent("#CC6677", alpha = 100)
+tblue <- makeTransparent("#88CCEE")
+
+### plots 
+h1 <- ACEs %>%
+  group_by(icsex, ACES) %>%
+  summarise(ic = n()) %>%
+  group_by(icsex) %>%
+  mutate(total = sum(ic), prop = ic/total) %>%
+  ggplot(., aes(x = as.factor(ACES), fill = icsex)) + 
+    geom_col(aes(y = prop), position = "identity") + 
+    scale_fill_manual(values = c(tred, tblue), labels = c("F", "M")) +
+    ylim(c(0,0.6)) +
+    xlab("Cumulative ACEs") +
+    ylab("Proportion") +
+    labs(fill = "") +
+    theme_classic() +
+    theme(axis.line = element_line(linewidth = 0.35),
+          axis.text = element_text(size = 11), 
+          text = element_text(size = 12), 
+          legend.position = c(0.9, 0.9))          
+
+h2 <- ACEs %>%
+  group_by(icsex, n_deprivation) %>%
+  summarise(ic = n()) %>%
+  group_by(icsex) %>%
+  mutate(total = sum(ic), prop = ic/total) %>%
+  ggplot(., aes(x = as.factor(n_deprivation), fill = icsex)) + 
+    geom_col(aes(y = prop), position = "identity") + 
+    scale_fill_manual(values = c(tred, tblue)) +
+    xlab("Deprivation score") +
+    ylab("") +
+    theme_classic() +
+    theme(axis.line = element_line(linewidth = 0.35),
+          axis.text = element_text(size = 11), 
+          text = element_text(size = 11), 
+          legend.position = "none")
+
+h3 <- ACEs %>%
+  group_by(icsex, n_threat) %>%
+  summarise(ic = n()) %>%
+  group_by(icsex) %>%
+  mutate(total = sum(ic), prop = ic/total) %>%
+  ggplot(., aes(x = as.factor(n_threat), fill = icsex)) + 
+    geom_col(aes(y = prop), position = "identity") + 
+    scale_fill_manual(values = c(tred, tblue)) +
+    xlab("Threat score") +
+    ylab("") +
+    theme_classic() +
+    theme(axis.line = element_line(linewidth = 0.35),
+          axis.text = element_text(size = 11), 
+          text = element_text(size = 11), 
+          legend.position = "none")
+
+```
+
+Multipanel figure
+```{r fig 1}
+library(cowplot)
+plot2 <- plot_grid(h2, h3, nrow = 2, 
+                   labels = c("b", "c"), label_size = 12, label_fontface = "plain")
+
+fig1 <- plot_grid(h1, plot2, ncol = 2, rel_widths = c(1, 0.55), labels = c("a", ""), label_size = 12, label_fontface = "plain")
+
+# ggsave('Figure1.png', width=12, height=9.6, units='cm', pointsize = 8, dpi = 1600)
+
+```
+
+
+### 2) Compare ACEs with prospective (adolescent) SES
+
+##### Fig. S1
+Dimensions
+```{r figure s1}
+tdarkred <- makeTransparent("#661100", 100)
+tdgray <- makeTransparent("#888888", 100)
+
+### deprivation (yes/no)
+fig_data <- ACEs %>%
+  mutate(deprivation = as.factor(case_when(
+    n_deprivation == 0 ~ 0,
+    T ~ 1
+  )),
+  threat = as.factor(case_when(
+    n_threat == 0 ~ 0,
+    T ~ 1
+  )))
+
+## threat
+wilcox.test(x = fig_data$assets98[fig_data$threat == 1], y = fig_data$assets98[fig_data$threat == 0], alternative = "less", paired = F, conf.int = T)
+summary(glm(threat ~ assets98, data = fig_data, family = "binomial"))
+confint(glm(threat ~ assets98, data = fig_data, family = "binomial"))
+
+## dep
+wilcox.test(x = fig_data$assets98[fig_data$deprivation == 1], y = fig_data$assets98[fig_data$deprivation == 0], alternative = "less", paired = F, conf.int = T)
+summary(glm(deprivation ~ assets98, data = fig_data, family = "binomial"))
+confint(glm(deprivation ~ assets98, data = fig_data, family = "binomial"))
+
+plot_d <- ggplot(fig_data, aes(deprivation, assets98)) +
+  # geom_violin(scale = "count") +
+  geom_boxplot(outliers = F, varwidth = T, notch = T) +
+  geom_jitter(width = 0.2, aes(col = deprivation)) +
+  scale_y_continuous(breaks = c(0,2,4,6,8,10), labels = c("0", "2", "4", "6", "8", "10")) +
+  scale_x_discrete(breaks = c(0,1), labels = c("No", "Yes")) +
+  scale_colour_manual(values = c(tdgray, tdarkred)) +
+  xlab("Deprivation") +
+  ylab("Household assets 1998") +
+  annotate("text", x = 1.5, y = 10.7, label = "**", size = 5) +
+  annotate("segment", x = 1, xend = 2, y = 10.6, yend = 10.6, lwd = 0.3) +
+  theme_classic() +
+  theme(legend.position="none", 
+        axis.text = element_text(size = rel(0.8))) 
+
+
+### threat (yes/no)
+plot_t <- ggplot(fig_data, aes(threat, assets98)) +
+  # geom_violin(scale = "count") +
+  geom_boxplot(outliers = F, varwidth = T, notch = T) +
+  geom_jitter(width = 0.2, aes(col = threat)) +
+  scale_y_continuous(breaks = c(0,2,4,6,8,10), labels = c("0", "2", "4", "6", "8", "10")) +
+  scale_x_discrete(breaks = c(0,1), labels = c("No", "Yes")) +
+  scale_colour_manual(values = c(tdgray, tdarkred)) +
+  xlab("Threat") +
+  ylab("Household assets 1998") +
+  annotate("text", x = 1.5, y = 10.7, label = " ", size = 5) +
+  # annotate("segment", x = 1, xend = 2, y = 10.6, yend = 10.6, lwd = 0.3) +
+  theme_classic() +
+  theme(legend.position="none",
+        axis.text = element_text(size = rel(0.8)))
+
+plots_td <- list(plot_t, plot_d)
+
+library(ggpubr)
+ggarrange(plotlist = plots_td, nrow = 1, ncol = 2, labels = "auto", font.label = list(face = "plain"))
+
+# ggsave('FigureS1.png', width=15, height=10, units='cm', pointsize = 8, dpi = 1500)
+
+```
+
+
+## Model ACEs
+From baseline SES and sex
+
+### 1) Cumulative ACEs
+Range 0-7; variance > mean
+```{r predict aces}
+model <- ACEs
+
+mean(model$ACES)
+var(model$ACES)
+var(model$ACES) / mean(model$ACES)
+
+#### Zero-inflated neg binomial
+comb_model <- glmmTMB(ACES ~ scale(assets83) + scale(meduc83) + icsex, data = model, family = nbinom2,
+                      ziformula = ~ icsex)
+summary(comb_model)
+exp(confint(comb_model))
+
+#### Check model
+# library(DHARMa)
+# simulationOutput <- simulateResiduals(fittedModel = comb_model, plot = F)
+# 
+# plot(simulationOutput)
+# 
+# testOutliers(comb_model)
+# testDispersion(comb_model) 
+# testZeroInflation(comb_model) 
+# 
+# # testing for number of 1s
+# countOnes <- function(x) sum(x == 1)
+# testGeneric(comb_model, alternative = "two.sided", summary = countOnes) 
+# 
+# testCategorical(comb_model, catPred = model$icsex)
+# 
+# plotResiduals(simulationOutput, form = model$assets83)
+# plotResiduals(simulationOutput, form = model$meduc83)
+```
+
+
+
+### 2) Threat score
+Range 0-3; variance ~ mean
+```{r predict threat}
+mean(model$n_threat)
+var(model$n_threat)
+var(model$n_threat) / mean(model$n_threat)
+
+#### Zero-inflated Poisson
+threat_model <- glmmTMB(n_threat ~ scale(assets83) + scale(meduc83) + icsex, data = model, family = poisson,
+                        ziformula = ~ icsex)
+summary(threat_model)
+exp(confint(threat_model))
+
+#### Check model
+# simulationOutput <- simulateResiduals(fittedModel = threat_model, plot = F)
+# plot(simulationOutput)
+# 
+# testOutliers(threat_model)
+# testDispersion(threat_model) 
+# testZeroInflation(threat_model) 
+# testCategorical(threat_model, catPred = model$icsex)
+# 
+# plotResiduals(simulationOutput, form = model$assets83)
+# plotResiduals(simulationOutput, form = model$meduc83)
+```
+
+### 3) Deprivation score
+Range 0-3; variance ~ mean
+```{r predict deprivation}
+mean(model$n_deprivation)
+var(model$n_deprivation)
+var(model$n_deprivation) / mean(model$n_deprivation)
+
+
+#### Zero-inflated Poisson
+dep_model <- glmmTMB(n_deprivation ~ scale(assets83) + scale(meduc83) + icsex, data = model, family = poisson,
+                        ziformula = ~ icsex)
+summary(dep_model)
+exp(confint(dep_model))
+
+#### Check model
+# simulationOutput <- simulateResiduals(fittedModel = dep_model, plot = F)
+# plot(simulationOutput)
+# 
+# testOutliers(dep_model)
+# testDispersion(dep_model) 
+# testZeroInflation(dep_model) 
+# testCategorical(dep_model, catPred = model$icsex)
+# 
+# plotResiduals(simulationOutput, form = model$assets83)
+# plotResiduals(simulationOutput, form = model$meduc83)
+
+```
+
+## Compare outcomes by sex
+
+Behavioral outcomes (remove right-censored IC)
+```{r sex diff beh}
+wilcox.test(ACEs$agesmoke[ACEs$smokestatus == 1 & ACEs$icsex == 1], ACEs$agesmoke[ACEs$smokestatus == 1 & ACEs$icsex == 0], conf.int = T) # p = 0.03
+
+wilcox.test(ACEs$agedrink[ACEs$drinkstatus == 1 & ACEs$icsex == 1], ACEs$agedrink[ACEs$drinkstatus == 1 & ACEs$icsex == 0], conf.int = T) # p < 0.001
+
+wilcox.test(ACEs$ageroman[ACEs$romstatus == 1 & ACEs$icsex == 1], ACEs$ageroman[ACEs$romstatus == 1 & ACEs$icsex == 0], conf.int = T) # p = 0.93
+
+wilcox.test(ACEs$age1stsex[ACEs$sexstatus == 1 & ACEs$icsex == 1], ACEs$age1stsex[ACEs$sexstatus == 1 & ACEs$icsex == 0], conf.int = T) # p  < 0.001
+
+```
+
+##### Fig. S3
+```{r fig s3}
+#### BEHAVIORAL OUTCOMES (m and f)
+# jpeg("FigureS3.png", width = 15, height = 15, units = "cm", res = 1500)
+
+par(mfrow = c(2,2), xpd = T)
+
+## first started smoking regularly (>= 1 / day)
+hist(ACEs$agesmoke[ACEs$smokestatus == 1 & ACEs$icsex == 1], 
+     xlim = c(5,36), ylim = c(0,252), breaks = seq(5,36,2), yaxt = "n",
+     ylab = "N individuals", xlab = "", main = "First smoke", cex.lab = 1.2,
+     col = tblue)
+hist(ACEs$agesmoke[ACEs$smokestatus == 1 & ACEs$icsex == 0], 
+     add = T, breaks = seq(5,36,2), 
+     col = tred)
+axis(2, las = 2)
+text(x = 30, y = 100, "p < 0.05", cex = 0.9)
+mtext("a", at = c(-2), cex = 1.3, line = 2)
+
+## first started drinking
+hist(ACEs$agedrink[ACEs$drinkstatus == 1 & ACEs$icsex == 1], 
+     xlim = c(5,36), ylim = c(0,252), breaks = seq(5,36,2), yaxt = "n",
+     ylab = "", xlab = "", main = "First drink", cex.lab = 1.2,
+     col = tblue)
+hist(ACEs$agedrink[ACEs$drinkstatus == 1 & ACEs$icsex == 0], 
+     add = T, breaks = seq(5,36,2), 
+     col = tred)
+axis(2, las = 2)
+legend(x = 32.5, y = 275, legend = c("F", "M"), fill = c(tred, tblue), bty = "n", cex = 1)
+text(x = 30, y = 100, "p < 0.001", cex = 0.9)
+mtext("b", at = c(-1), cex = 1.3, line = 2)
+
+
+## first romantic relationship
+hist(ACEs$ageroman[ACEs$romstatus == 1 & ACEs$icsex == 1], 
+     xlim = c(5,36), ylim = c(0,252), breaks = seq(5,36,2), yaxt = "n",
+     ylab = "N individuals", xlab = "Age (years)", main = "First relationship", cex.lab = 1.2,
+     col = tblue)
+hist(ACEs$ageroman[ACEs$romstatus == 1 & ACEs$icsex == 0], 
+     add = T, breaks = seq(5,36,2), 
+     col = tred)
+axis(2, las = 2)
+text(x = 30, y = 100, "p = 0.93", cex = 0.9)
+mtext("c", at = c(-2), cex = 1.3, line = 2)
+
+
+## first sexual intercourse
+hist(ACEs$age1stsex[ACEs$sexstatus == 1 & ACEs$icsex == 1], 
+     xlim = c(5,36), ylim = c(0,252), breaks = seq(5,36,2), yaxt = "n",
+     ylab = "", xlab = "Age (years)", main = "Sexual debut", cex.lab = 1.2,
+     col = tblue)
+hist(ACEs$age1stsex[ACEs$sexstatus == 1 & ACEs$icsex == 0], 
+     add = T, breaks = seq(5,36,2), 
+     col = tred)
+axis(2, las = 2)
+text(x = 30, y = 100, "p < 0.001", cex = 0.9)
+mtext("d", at = c(0), cex = 1.3, line = 2) 
+
+# dev.off()
+```
+
+
+### Life history-related outcomes
+
+#### 1) Pairwise correlations
+
+##### Fig. 2
+ggcorrplots by icsex
+```{r corr}
+corr_ACEs <- ACEs
+
+library(ggcorrplot)
+
+## Make age NA for right-censored IC
+corr_ACEs$Agefirstconc[corr_ACEs$conc_status == 0 & corr_ACEs$icsex == 0] <- NA
+corr_ACEs$agesmoke[corr_ACEs$smokestatus == 0] <- NA
+corr_ACEs$agedrink[corr_ACEs$drinkstatus == 0] <- NA
+corr_ACEs$ageroman[corr_ACEs$romstatus == 0] <- NA
+corr_ACEs$age1stsex[corr_ACEs$sexstatus == 0] <- NA
+
+
+### FEMALES
+table(corr_ACEs$gravidity)
+
+f_ACEs <- corr_ACEs %>%
+  filter(icsex == 0) 
+
+## corr
+f_matrix <- cor(f_ACEs[ , c("agemens", "Agefirstconc", "gravidity", "agesmoke", "agedrink", "ageroman", "age1stsex")], use = "complete.obs", method = "spearman")
+colnames(f_matrix) <- c("Menarche", "First conception", "Gravidity", "First smoke", "First drink", "First romance", "Sexual debut")
+rownames(f_matrix) <- c("Menarche", "First conception", "Gravidity", "First smoke", "First drink", "First romance", "Sexual debut")
+
+gg_f2 <- ggcorrplot(f_matrix, type = "upper", lab = T, digits = 2, show.legend = F) +
+  theme(plot.margin = margin(8.5,1.5,1,2, "pt"))
+
+
+### MALES
+m_ACEs <- corr_ACEs %>%
+  filter(icsex == 1) 
+
+mACEs <- m_ACEs %>%
+  mutate(x = 0, y = 0)
+
+m_matrix <- cor(mACEs[ , c("x", "y", "pubicdev", "agesmoke", "agedrink", "ageroman", "age1stsex")], use = "complete.obs", method = "spearman")
+colnames(m_matrix) <- c("x", "y", "Tanner score   ", "First smoke", "First drink", "First romance", "Sexual debut")
+rownames(m_matrix) <- c("x", "y", "Tanner score   ", "First smoke", "First drink", "First romance", "Sexual debut")
+  
+gg_m2 <- ggcorrplot(m_matrix, type = "upper", lab = T, digits = 2) +
+  theme(plot.margin = margin(9.5,6,64,6.5, "pt"))
+
+## combine plots
+ggarrange(plotlist = c(gg_f2, gg_m2), ncol = 2,  labels = "auto", font.label = list(face = "plain"))
+
+# ggsave("Figure2.png", width=20, height=10, units='cm', pointsize = 8, dpi = 1600)
+
+```
+
+
+### Prep data for models
+Create columns for discrete time series data
+-- start at 0 (1 year before earliest event), end at event time - X
+```{r columns}
+range(ACEs$agemens, na.rm = T) # 10
+range(ACEs$Agefirstconc, na.rm = T) # 14
+range(ACEs$agesmoke, na.rm = T) # 5
+range(ACEs$agedrink, na.rm = T) # 5
+range(ACEs$ageroman, na.rm = T) # 9
+range(ACEs$age1stsex, na.rm = T) # 8
+
+data <- ACEs %>%
+   mutate(enter = 0, 
+         exit.men = agemens - 9, 
+         exit.conc = Agefirstconc - 13, 
+         exit.smoke = agesmoke - 4, 
+         exit.drink = agedrink - 4,
+         exit.rom = ageroman - 8, 
+         exit.sex = age1stsex - 7
+         )
+```
+
+Split sexes
+```{r icsex}
+f_data <- data %>%
+  filter(icsex == 0)
+
+m_data <- data %>%
+  filter(icsex == 1)
+```
+
+
+#### Create person period datasets
+Discrete time-series analysis: person periods 
+```{r personperiods}
+## generate person-period datasets 
+f_data_men <- dataLong(dataShort = f_data, 
+                       timeColumn = "exit.men",
+                       eventColumn = "menstatus",
+                       timeAsFactor = F) 
+f_data_conc <- dataLong(dataShort = f_data, 
+                       timeColumn = "exit.conc",
+                       eventColumn = "conc_status",
+                       timeAsFactor = F) 
+f_data_smoke <- dataLong(dataShort = f_data, 
+                       timeColumn = "exit.smoke",
+                       eventColumn = "smokestatus",
+                       timeAsFactor = F) 
+f_data_drink <- dataLong(dataShort = f_data, 
+                       timeColumn = "exit.drink",
+                       eventColumn = "drinkstatus",
+                       timeAsFactor = F) 
+f_data_rom <- dataLong(dataShort = f_data, 
+                       timeColumn = "exit.rom",
+                       eventColumn = "romstatus",
+                       timeAsFactor = F) 
+f_data_sex <- dataLong(dataShort = f_data, 
+                       timeColumn = "exit.sex",
+                       eventColumn = "sexstatus",
+                       timeAsFactor = F) 
+
+m_data_smoke <- dataLong(dataShort = m_data, 
+                       timeColumn = "exit.smoke",
+                       eventColumn = "smokestatus",
+                       timeAsFactor = F) 
+m_data_drink <- dataLong(dataShort = m_data, 
+                       timeColumn = "exit.drink",
+                       eventColumn = "drinkstatus",
+                       timeAsFactor = F) 
+m_data_rom <- dataLong(dataShort = m_data, 
+                       timeColumn = "exit.rom",
+                       eventColumn = "romstatus",
+                       timeAsFactor = F) 
+m_data_sex <- dataLong(dataShort = m_data, 
+                       timeColumn = "exit.sex",
+                       eventColumn = "sexstatus",
+                       timeAsFactor = F) 
+```
+
+### Model biodemographic LH traits
+
+#### 1) Females
+
+##### i) Menarche
+Baseline hazard -- quadratic fxn
+
+Unadjusted:
+```{r unadj men}
+## null model
+Gompertz_menarche_Baseline_sq <- glm(formula = y ~ timeInt + I(timeInt^2),
+                  family = binomial(link = "cloglog"),
+                  data = f_data_men)
+summary(Gompertz_menarche_Baseline_sq) 
+
+
+## cumaces model:
+Gompertz_menarche_aces <- glm(formula = y ~ timeInt + I(timeInt^2) + cumaces,
+                  family = binomial(link = "cloglog"),
+                  data = f_data_men)
+summary(Gompertz_menarche_aces)
+exp(confint(Gompertz_menarche_aces))
+
+
+## dimensions model:
+Gompertz_menarche_thdep <- glm(formula = y ~ timeInt + I(timeInt^2) + n_threat + n_deprivation,
+                  family = binomial(link = "cloglog"),
+                  data = f_data_men)
+
+summary(Gompertz_menarche_thdep)
+exp(confint(Gompertz_menarche_thdep))
+
+```
+
+Adjusted: 
+```{r adj men}
+## null model
+Gompertz_menarche_Baseline_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + scale(assets83) + scale(meduc83) + scale(mommenst),
+                  family = binomial(link = "cloglog"),
+                  data = f_data_men)
+summary(Gompertz_menarche_Baseline_adj) 
+
+
+## cumaces model:
+Gompertz_menarche_aces_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + cumaces + scale(assets83) + scale(meduc83) + scale(mommenst),
+                  family = binomial(link = "cloglog"),
+                  data = f_data_men)
+summary(Gompertz_menarche_aces_adj)
+exp(confint(Gompertz_menarche_aces_adj))
+
+
+## dimensions model:
+Gompertz_menarche_thdep_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + n_threat + n_deprivation + scale(assets83) + scale(meduc83) + scale(mommenst),
+                  family = binomial(link = "cloglog"),
+                  data = f_data_men)
+
+summary(Gompertz_menarche_thdep_adj)
+exp(confint(Gompertz_menarche_thdep_adj))
+
+```
+
+
+##### ii) First conception
+Baseline hazard -- quadratic fxn
+
+Unadjusted models:
+```{r unadj conc}
+### Null model
+Gompertz_conc_Baseline_sq <- glm(formula = y ~ timeInt + I(timeInt^2),
+                               family = binomial(link = "cloglog"),
+                               data = f_data_conc)
+
+summary(Gompertz_conc_Baseline_sq) 
+
+
+## cumaces model
+Gompertz_conc_aces <- glm(formula = y ~ timeInt + I(timeInt^2) + cumaces,
+                  family = binomial(link = "cloglog"),
+                  data = f_data_conc)
+summary(Gompertz_conc_aces)
+exp(confint(Gompertz_conc_aces))
+
+## dimensions model
+Gompertz_conc_thdep <- glm(formula = y ~ timeInt + I(timeInt^2) + n_threat + n_deprivation,
+                  family = binomial(link = "cloglog"),
+                  data = f_data_conc)
+summary(Gompertz_conc_thdep)
+exp(confint(Gompertz_conc_thdep))
+
+```
+
+Adjusted models: 
+```{r adj conc}
+## null model
+Gompertz_conc_Baseline_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + scale(assets83) + scale(meduc83) + scale(mommenst),
+                  family = binomial(link = "cloglog"),
+                  data = f_data_conc)
+summary(Gompertz_conc_Baseline_adj) 
+
+
+## cumaces model:
+Gompertz_conc_aces_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + cumaces + scale(assets83) + scale(meduc83) + scale(mommenst),
+                  family = binomial(link = "cloglog"),
+                  data = f_data_conc)
+summary(Gompertz_conc_aces_adj)
+exp(confint(Gompertz_conc_aces_adj))
+
+
+## dimensions model:
+Gompertz_conc_thdep_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + n_threat + n_deprivation + scale(assets83) + scale(meduc83) + scale(mommenst),
+                  family = binomial(link = "cloglog"),
+                  data = f_data_conc)
+
+summary(Gompertz_conc_thdep_adj)
+exp(confint(Gompertz_conc_thdep_adj))
+
+```
+
+##### ii) Gravidity
+
+Unadjusted models:
+Zero-inflated neg binomial models
+```{r unadj grav}
+mean(f_data$gravidity)
+var(f_data$gravidity)
+var(f_data$gravidity) / mean(f_data$gravidity)
+
+#### null model
+grav_null <- glmmTMB(gravidity ~ scale(Age2018intv), data = f_data, family = nbinom2, 
+                        ziformula = ~1)
+summary(grav_null)
+exp(confint(grav_null))
+
+#### cumulative ACEs
+grav_cumaces <- glmmTMB(gravidity ~ scale(cumaces) + scale(Age2018intv), data = f_data, family = nbinom2, 
+                        ziformula = ~1)
+summary(grav_cumaces)
+exp(confint(grav_cumaces))
+
+### ACE dimensions
+grav_td <- glmmTMB(gravidity ~ scale(n_threat) + scale(n_deprivation) + scale(Age2018intv), data = f_data, family = nbinom2,
+                        zi = ~ 1)
+summary(grav_td)
+exp(confint(grav_td))
+
+```
+
+Adjusted models:
+Zero-inflated Poisson models
+```{r grav adj}
+### Cumulative ACEs
+grav_cumaces <- glmmTMB(gravidity ~ scale(cumaces) + scale(assets83) + scale(meduc83) + scale(mommenst) + scale(Age2018intv), data = f_data, family = poisson, 
+                        ziformula = ~ 1)
+summary(grav_cumaces)
+exp(confint(grav_cumaces))
+
+
+## Subtypes: Threat & Deprivation
+grav_td <- glmmTMB(gravidity ~ scale(n_threat) + scale(n_deprivation) + scale(assets83) + scale(meduc83) + scale(mommenst) + scale(Age2018intv), data = f_data, family = poisson, 
+                   ziformula = ~1)
+summary(grav_td)
+exp(confint(grav_td))
+
+```
+
+
+#### 2) Males
+
+##### i) Advanced pubertal development
+Binomial model
+
+Unadjusted models:
+```{r unadj mat}
+## Make binomial variable for advanced devl (tanner score 4 or 5)
+m_data <- m_data %>%
+  mutate(pubmat = case_when(
+    pubicdev %in% c(4,5) ~ 1,
+    pubicdev %in% c(1,2,3) ~ 0
+  ))
+table(m_data$pubmat)
+
+##null
+pub_null <- glm(pubmat ~ scale(icage98), data = m_data, family = "binomial")
+summary(pub_null)
+
+
+## cumulative aces
+pub_cumaces <- glm(pubmat ~ scale(cumaces) + scale(icage98), data = m_data, family = "binomial")
+summary(pub_cumaces)
+exp(confint(pub_cumaces))
+exp(coef(pub_cumaces)) 
+
+
+## threat deprivation
+pub_fit2 <- glm(pubmat ~ scale(n_threat) + scale(n_deprivation) + scale(icage98), data = m_data, family = "binomial")
+summary(pub_fit2)
+exp(confint(pub_fit2))
+exp(coef(pub_fit2)) 
+
+```
+
+
+Adjusted models:
+```{r adj mat}
+##null
+pub_null_adj <- glm(pubmat ~ scale(icage98) + scale(assets83) + scale(meduc83) + scale(mommenst), data = m_data, family = "binomial")
+summary(pub_null_adj)
+
+
+## cum aces
+pub_cumaces_adj <- glm(pubmat ~ scale(cumaces) + scale(icage98) + scale(assets83) + scale(meduc83) + scale(mommenst), data = m_data, family = "binomial")
+summary(pub_cumaces_adj)
+exp(confint(pub_cumaces_adj))
+exp(coef(pub_cumaces_adj)) # 1 unit increase in cumaces --> odds of more developed 1.16x larger than the odds of being 1 (no dev)
+
+
+## threat deprivation
+pub_fit2_adj <- glm(pubmat ~ scale(n_threat) + scale(n_deprivation) + scale(icage98) + scale(assets83) + scale(meduc83) + scale(mommenst), data = m_data, family = "binomial")
+summary(pub_fit2_adj)
+exp(confint(pub_fit2_adj))
+exp(coef(pub_fit2_adj)) 
+
+```
+
+
+#### Fig. 3
+K-M plots for female biodemographic traits
+```{r menarche and first conc}
+tdarkred <- makeTransparent("#661100", 180)
+tdgray <- makeTransparent("#888888", 180)
+
+
+### cumulative ACEs
+## Menarche
+surv_men1 <- Surv(f_data[f_data$cumaces %in% c(0,3), ]$agemens, f_data[f_data$cumaces %in% c(0,3), ]$menstatus) 
+survcurv1 <- survfit(surv_men1 ~ cumaces_factor, data = f_data[f_data$cumaces %in% c(0,3), ]) 
+men_cum <- ggsurvplot(survcurv1, 
+           palette = c(tdgray, tdarkred), linetype = c(1,1), 
+           xlim = c(9,17), break.x.by = 2,
+           surv.median.line = "hv",
+           xlab = "", ylab = "Menarche", title = "Cumulative ACEs",
+           font.x=c(size=12), font.y=c(size=12), font.tickslab = c(size = 12),
+           font.title = c(size=12),
+           fun = "event", 
+           legend.title = "", legend.labs = c("0 ", "3+ "),
+           font.legend = c(size=12), 
+           ggtheme=custom_theme())
+# men_cum + labs(tag = "a")
+
+## Pregnancy
+surv_preg1 <- Surv(f_data[f_data$cumaces %in% c(0,3), ]$Agefirstconc, f_data[f_data$cumaces %in% c(0,3), ]$pregstatus) 
+survcurv2 <- survfit(surv_preg1 ~ cumaces_factor, data = f_data[f_data$cumaces %in% c(0,3), ]) 
+preg_cum <- ggsurvplot(survcurv2, 
+           palette = c(tdgray, tdarkred), linetype = c(1,1), 
+           xlim = c(14,36), ylim = c(0,1), break.x.by = 5, censor = F,
+           surv.median.line = "hv",
+           xlab = "Age (years)\n", ylab = "First conception", 
+           title = " ", 
+           subtitle = " ",
+           font.x=c(size=12), font.y=c(size=12), 
+           font.tickslab = c(size = 12), font.title = c(size=30), 
+           font.subtitle = c(size = 11),
+           fun = "event", 
+           legend = "none", 
+           ggtheme=custom_theme())
+
+
+### Subtypes
+## Menarche - threat
+surv_men2 <- Surv(f_data[f_data$n_threat %in% c(0,3), ]$agemens, f_data[f_data$n_threat %in% c(0,3), ]$menstatus) 
+survcurvt1 <- survfit(surv_men2 ~ n_threat, data = f_data[f_data$n_threat %in% c(0,3), ]) 
+men_t <- ggsurvplot(survcurvt1, 
+           palette = c(tdgray, tdarkred), linetype = c(1,1), 
+           xlim = c(9,17), break.x.by = 2,
+           surv.median.line = "hv",
+           xlab = "", ylab = " ", title = "Threat score",
+           font.x=c(size=12), font.y=c(size=12), font.tickslab = c(size = 12),
+           font.title = c(size=12),
+           fun = "event", 
+           legend.title = "", legend.labs = c("0 ", "3+ "),
+           font.legend = c(size=12), 
+           ggtheme=custom_theme())
+
+## First conc - threat
+surv_preg2 <- Surv(f_data[f_data$n_threat %in% c(0,3), ]$Agefirstconc, f_data[f_data$n_threat %in% c(0,3), ]$pregstatus) 
+survcurvt2 <- survfit(surv_preg2 ~ n_threat, data = f_data[f_data$n_threat %in% c(0,3), ]) 
+preg_t <- ggsurvplot(survcurvt2, 
+           palette = c(tdgray, tdarkred), linetype = c(1,1), 
+           xlim = c(14,36), ylim = c(0,1), break.x.by = 5, censor = F,
+           surv.median.line = "hv",
+           xlab = "Age (years)\n", ylab = "", 
+           title = " ", subtitle = " ",
+           font.x=c(size=12), font.y=c(size=12), 
+           font.tickslab = c(size = 12), font.title = c(size=30), 
+           font.subtitle = c(size = 11),
+           fun = "event", 
+           legend = "none", 
+           ggtheme=custom_theme())
+
+
+## Menarche - deprivation
+surv_men3 <- Surv(f_data[f_data$n_deprivation %in% c(0,3), ]$agemens, f_data[f_data$n_deprivation %in% c(0,3), ]$menstatus) 
+survcurvd1 <- survfit(surv_men3 ~ n_deprivation, data = f_data[f_data$n_deprivation %in% c(0,3), ]) 
+men_d <- ggsurvplot(survcurvd1, 
+           palette = c(tdgray, tdarkred), linetype = c(1,1), 
+           xlim = c(9,17), break.x.by = 2,
+           surv.median.line = "hv",
+           xlab = "", ylab = " ", title = "Deprivation score",
+           font.x=c(size=12), font.y=c(size=12), font.tickslab = c(size = 12),
+           font.title = c(size=12),
+           fun = "event", 
+           legend.title = "", legend.labs = c("0 ", "3 "),
+           font.legend = c(size=12), 
+           ggtheme=custom_theme())
+
+## First conc - deprivation
+surv_preg3 <- Surv(f_data[f_data$n_deprivation %in% c(0,3), ]$Agefirstconc, f_data[f_data$n_deprivation %in% c(0,3), ]$pregstatus) 
+survcurvd2 <- survfit(surv_preg3 ~ n_deprivation, data = f_data[f_data$n_deprivation %in% c(0,3), ]) 
+preg_d <- ggsurvplot(survcurvd2, 
+           palette = c(tdgray, tdarkred), linetype = c(1,1), 
+           xlim = c(14,36), ylim = c(0,1), break.x.by = 5, censor = F,
+           surv.median.line = "hv",
+           subtitle = "*",
+           xlab = "Age (years)\n", ylab = " ", 
+           title = " ", 
+           font.x=c(size=12), font.y=c(size=12), 
+           font.tickslab = c(size = 12), font.title = c(size=25), 
+           font.subtitle = c(size = 16),
+           fun = "event", 
+           legend = "none", 
+           ggtheme=custom_theme())
+
+
+plot_grid(men_cum$plot,
+preg_cum$plot,
+men_t$plot,
+preg_t$plot,
+men_d$plot,
+preg_d$plot,
+labels = "auto", byrow = F,
+label_size = 12,
+label_fontface = "plain", 
+label_x = c(0.05,0.1,0.1,0.05,0.1,0.1),
+label_y = c(0.95,0.95, 0.95,0.92,0.92,0.92))
+
+# ggsave('Figure3.png', width=16, height=13.3, units='cm',  pointsize = 8, dpi = 1600)
+
+```
+
+## Model behavioral LH traits
+
+#### 1) Females
+
+##### i) First smoke 
+```{r unadj f smoke}
+### Null model
+Gompertz_smoke_Baseline_cb <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3),
+                  family = binomial(link = "cloglog"),
+                  data = f_data_smoke)
+summary(Gompertz_smoke_Baseline_cb) 
+
+### cumaces model
+Gompertz_smoke_aces <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + cumaces,
+                  family = binomial(link = "cloglog"),
+                  data = f_data_smoke)
+summary(Gompertz_smoke_aces)
+exp(confint(Gompertz_smoke_aces))
+
+Gompertz_smoke_td <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + n_threat + n_deprivation,
+                  family = binomial(link = "cloglog"),
+                  data = f_data_smoke)
+summary(Gompertz_smoke_td)
+exp(confint(Gompertz_smoke_td))
+
+```
+
+Adjusted models
+```{r adj f smoke}
+### Null model
+Gompertz_smoke_Baseline_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + scale(assets83) + scale(meduc83) + scale(mommenst),
+                  family = binomial(link = "cloglog"),
+                  data = f_data_smoke)
+summary(Gompertz_smoke_Baseline_adj) 
+
+### cumaces model
+Gompertz_smoke_aces_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + cumaces + scale(assets83) + scale(meduc83) + scale(mommenst),
+                  family = binomial(link = "cloglog"),
+                  data = f_data_smoke)
+summary(Gompertz_smoke_aces_adj)
+exp(confint(Gompertz_smoke_aces_adj))
+
+Gompertz_smoke_td_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + n_threat + n_deprivation + scale(assets83) + scale(meduc83) + scale(mommenst),
+                  family = binomial(link = "cloglog"),
+                  data = f_data_smoke)
+summary(Gompertz_smoke_td_adj)
+exp(confint(Gompertz_smoke_td_adj))
+
+```
+
+##### ii) First drink
+
+Unadjusted models:
+```{r unadj f drink}
+### Null model
+Gompertz_drink_Baseline_cb <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3),
+                  family = binomial(link = "cloglog"),
+                  data = f_data_drink)
+summary(Gompertz_drink_Baseline_cb) 
+
+
+### cumaces model
+Gompertz_drink_aces <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + cumaces,
+                  family = binomial(link = "cloglog"),
+                  data = f_data_drink)
+summary(Gompertz_drink_aces)
+exp(confint(Gompertz_drink_aces))
+
+### dimensions model
+Gompertz_drink_td <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + n_threat + n_deprivation,
+                               family = binomial(link = "cloglog"),
+                               data = f_data_drink)
+summary(Gompertz_drink_td)
+exp(confint(Gompertz_drink_td))
+```
+
+Adjusted models
+```{r adj f drink}
+### Null model
+Gompertz_drink_Baseline_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + scale(assets83) + scale(meduc83) + scale(mommenst),
+                  family = binomial(link = "cloglog"),
+                  data = f_data_drink)
+summary(Gompertz_drink_Baseline_adj) 
+
+
+### cumaces model
+Gompertz_drink_aces_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + cumaces + scale(assets83) + scale(meduc83) + scale(mommenst),
+                  family = binomial(link = "cloglog"),
+                  data = f_data_drink)
+summary(Gompertz_drink_aces_adj)
+exp(confint(Gompertz_drink_aces_adj))
+
+### dimensions model
+Gompertz_drink_td_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + n_threat + n_deprivation + scale(assets83) + scale(meduc83) + scale(mommenst),
+                               family = binomial(link = "cloglog"),
+                               data = f_data_drink)
+summary(Gompertz_drink_td_adj)
+exp(confint(Gompertz_drink_td_adj))
+
+```
+
+##### iii) First romantic relationship
+
+Unadjusted models:
+```{r unadj f rom}
+### Null model
+Gompertz_rom_Baseline_cb <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3),
+                  family = binomial(link = "cloglog"),
+                  data = f_data_rom)
+summary(Gompertz_rom_Baseline_cb) 
+
+
+### cumaces model
+Gompertz_rom_aces <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + cumaces,
+                  family = binomial(link = "cloglog"),
+                  data = f_data_rom)
+summary(Gompertz_rom_aces)
+exp(confint(Gompertz_rom_aces))
+
+### dimensions model
+Gompertz_rom_td <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + n_threat + n_deprivation,
+                  family = binomial(link = "cloglog"),
+                  data = f_data_rom)
+summary(Gompertz_rom_td)
+exp(confint(Gompertz_rom_td))
+
+```
+
+Adjusted models
+```{r romance adj}
+### Null model
+Gompertz_rom_Baseline_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + scale(assets83) + scale(meduc83) + scale(mommenst),
+                  family = binomial(link = "cloglog"),
+                  data = f_data_rom)
+summary(Gompertz_rom_Baseline_adj) 
+
+
+### cumaces model
+Gompertz_rom_aces_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + cumaces + scale(assets83) + scale(meduc83) + scale(mommenst),
+                  family = binomial(link = "cloglog"),
+                  data = f_data_rom)
+summary(Gompertz_rom_aces_adj)
+exp(confint(Gompertz_rom_aces_adj))
+
+### dimensions model
+Gompertz_rom_td_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + n_threat + n_deprivation + scale(assets83) + scale(meduc83) + scale(mommenst),
+                               family = binomial(link = "cloglog"),
+                               data = f_data_rom)
+summary(Gompertz_rom_td_adj)
+exp(confint(Gompertz_rom_td_adj))
+
+```
+
+##### iv) Sexual debut
+
+Unadjusted models
+```{r unadj f sex}
+### Null model
+Gompertz_sex_Baseline_cb <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3),
+                  family = binomial(link = "cloglog"),
+                  data = f_data_sex)
+summary(Gompertz_sex_Baseline_cb) 
+
+
+### cumaces model
+Gompertz_sex_aces <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + cumaces,
+                 family = binomial(link = "cloglog"),
+                  data = f_data_sex)
+summary(Gompertz_sex_aces)
+exp(confint(Gompertz_sex_aces))
+
+### dimensions model
+Gompertz_sex_td <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + n_threat + n_deprivation,
+                  family = binomial(link = "cloglog"),
+                  data = f_data_sex)
+summary(Gompertz_sex_td)
+exp(confint(Gompertz_sex_td))
+
+```
+
+Adjusted models
+```{r sex adj}
+### Null model
+Gompertz_sex_Baseline_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + scale(assets83) + scale(meduc83) + scale(mommenst),
+                  family = binomial(link = "cloglog"),
+                  data = f_data_sex)
+summary(Gompertz_sex_Baseline_adj) 
+
+
+### cumaces model
+Gompertz_sex_aces_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + cumaces + scale(assets83) + scale(meduc83) + scale(mommenst),
+                  family = binomial(link = "cloglog"),
+                  data = f_data_sex)
+summary(Gompertz_sex_aces_adj)
+exp(confint(Gompertz_sex_aces_adj))
+
+
+### dimensions model
+Gompertz_sex_td_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + n_threat + n_deprivation + scale(assets83) + scale(meduc83) + scale(mommenst),
+                               family = binomial(link = "cloglog"),
+                               data = f_data_sex)
+summary(Gompertz_sex_td_adj)
+exp(confint(Gompertz_sex_td_adj))
+
+```
+
+
+#### 2) Males
+
+##### i) First smoke 
+```{r unadj m smoke}
+### Null model
+mGompertz_smoke_Baseline_cb <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3),
+                  family = binomial(link = "cloglog"),
+                  data = m_data_smoke)
+summary(mGompertz_smoke_Baseline_cb) 
+
+### cumaces model
+mGompertz_smoke_aces <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + cumaces,
+                  family = binomial(link = "cloglog"),
+                  data = m_data_smoke)
+summary(mGompertz_smoke_aces)
+exp(confint(mGompertz_smoke_aces))
+
+mGompertz_smoke_td <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + n_threat + n_deprivation,
+                  family = binomial(link = "cloglog"),
+                  data = m_data_smoke)
+summary(mGompertz_smoke_td)
+exp(confint(mGompertz_smoke_td))
+
+```
+
+Adjusted models
+```{r adj m smoke}
+### Null model
+mGompertz_smoke_Baseline_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + scale(assets83) + scale(meduc83) + scale(mommenst),
+                  family = binomial(link = "cloglog"),
+                  data = m_data_smoke)
+summary(mGompertz_smoke_Baseline_adj) 
+
+### cumaces model
+mGompertz_smoke_aces_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + cumaces + scale(assets83) + scale(meduc83) + scale(mommenst),
+                  family = binomial(link = "cloglog"),
+                  data = m_data_smoke)
+summary(mGompertz_smoke_aces_adj)
+exp(confint(mGompertz_smoke_aces_adj))
+
+mGompertz_smoke_td_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + n_threat + n_deprivation + scale(assets83) + scale(meduc83) + scale(mommenst),
+                  family = binomial(link = "cloglog"),
+                  data = m_data_smoke)
+summary(mGompertz_smoke_td_adj)
+exp(confint(mGompertz_smoke_td_adj))
+
+```
+
+##### ii) First drink
+
+Unadjusted models:
+```{r unadj m drink}
+### Null model
+mGompertz_drink_Baseline_cb <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3),
+                  family = binomial(link = "cloglog"),
+                  data = m_data_drink)
+summary(mGompertz_drink_Baseline_cb) 
+
+
+### cumaces model
+mGompertz_drink_aces <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + cumaces,
+                  family = binomial(link = "cloglog"),
+                  data = m_data_drink)
+summary(mGompertz_drink_aces)
+exp(confint(mGompertz_drink_aces))
+
+### dimensions model
+mGompertz_drink_td <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + n_threat + n_deprivation,
+                               family = binomial(link = "cloglog"),
+                               data = m_data_drink)
+summary(mGompertz_drink_td)
+exp(confint(mGompertz_drink_td))
+```
+
+Adjusted models
+```{r adj m drink}
+### Null model
+mGompertz_drink_Baseline_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + scale(assets83) + scale(meduc83) + scale(mommenst),
+                  family = binomial(link = "cloglog"),
+                  data = m_data_drink)
+summary(mGompertz_drink_Baseline_adj) 
+
+
+### cumaces model
+mGompertz_drink_aces_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + cumaces + scale(assets83) + scale(meduc83) + scale(mommenst),
+                  family = binomial(link = "cloglog"),
+                  data = m_data_drink)
+summary(mGompertz_drink_aces_adj)
+exp(confint(mGompertz_drink_aces_adj))
+
+### dimensions model
+mGompertz_drink_td_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + n_threat + n_deprivation + scale(assets83) + scale(meduc83) + scale(mommenst),
+                               family = binomial(link = "cloglog"),
+                               data = m_data_drink)
+summary(mGompertz_drink_td_adj)
+exp(confint(mGompertz_drink_td_adj))
+
+```
+
+##### iii) First romantic relationship
+
+Unadjusted models:
+```{r unadj m rom}
+### Null model
+mGompertz_rom_Baseline_cb <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3),
+                  family = binomial(link = "cloglog"),
+                  data = m_data_rom)
+summary(mGompertz_rom_Baseline_cb) 
+
+
+### cumaces model
+mGompertz_rom_aces <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + cumaces,
+                  family = binomial(link = "cloglog"),
+                  data = m_data_rom)
+summary(mGompertz_rom_aces)
+exp(confint(mGompertz_rom_aces))
+
+### dimensions model
+mGompertz_rom_td <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + n_threat + n_deprivation,
+                  family = binomial(link = "cloglog"),
+                  data = m_data_rom)
+summary(mGompertz_rom_td)
+exp(confint(mGompertz_rom_td))
+
+```
+
+Adjusted models
+```{r m romance adj}
+### Null model
+mGompertz_rom_Baseline_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + scale(assets83) + scale(meduc83) + scale(mommenst),
+                  family = binomial(link = "cloglog"),
+                  data = m_data_rom)
+summary(mGompertz_rom_Baseline_adj) 
+
+
+### cumaces model
+mGompertz_rom_aces_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + cumaces + scale(assets83) + scale(meduc83) + scale(mommenst),
+                  family = binomial(link = "cloglog"),
+                  data = m_data_rom)
+summary(mGompertz_rom_aces_adj)
+exp(confint(mGompertz_rom_aces_adj))
+
+### dimensions model
+mGompertz_rom_td_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + n_threat + n_deprivation + scale(assets83) + scale(meduc83) + scale(mommenst),
+                               family = binomial(link = "cloglog"),
+                               data = m_data_rom)
+summary(mGompertz_rom_td_adj)
+exp(confint(mGompertz_rom_td_adj))
+
+```
+
+##### iv) Sexual debut
+
+Unadjusted models
+```{r unadj m sex}
+### Null model
+mGompertz_sex_Baseline_cb <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3),
+                  family = binomial(link = "cloglog"),
+                  data = m_data_sex)
+summary(mGompertz_sex_Baseline_cb) 
+
+
+### cumaces model
+mGompertz_sex_aces <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + cumaces,
+                 family = binomial(link = "cloglog"),
+                  data = m_data_sex)
+summary(mGompertz_sex_aces)
+exp(confint(mGompertz_sex_aces))
+
+### dimensions model
+mGompertz_sex_td <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + n_threat + n_deprivation,
+                  family = binomial(link = "cloglog"),
+                  data = m_data_sex)
+summary(mGompertz_sex_td)
+exp(confint(mGompertz_sex_td))
+
+```
+
+Adjusted models
+```{r m sex adj}
+### Null model
+mGompertz_sex_Baseline_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + scale(assets83) + scale(meduc83) + scale(mommenst),
+                  family = binomial(link = "cloglog"),
+                  data = m_data_sex)
+summary(mGompertz_sex_Baseline_adj) 
+
+
+### cumaces model
+mGompertz_sex_aces_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + cumaces + scale(assets83) + scale(meduc83) + scale(mommenst),
+                  family = binomial(link = "cloglog"),
+                  data = m_data_sex)
+summary(mGompertz_sex_aces_adj)
+exp(confint(mGompertz_sex_aces_adj))
+
+
+### dimensions model
+mGompertz_sex_td_adj <- glm(formula = y ~ timeInt + I(timeInt^2) + I(timeInt^3) + n_threat + n_deprivation + scale(assets83) + scale(meduc83) + scale(mommenst),
+                               family = binomial(link = "cloglog"),
+                               data = m_data_sex)
+summary(mGompertz_sex_td_adj)
+exp(confint(mGompertz_sex_td_adj))
+
+```
+
+#### Fig. 4
+
+Make function to plot survival curves together
+```{r plot fxn}
+genCombSurvPlots <- function(modellist, data, outcome, xlab, ylab, minage, maxage) {
+  plt <- ggsurvplot_combine(modellist, data = data, 
+          # palette = c("#888888D2", "#661100D2", tdgray, tdarkred),
+           palette = c(alpha("#888888", 0.7), alpha("#661100", 0.7), alpha("#888888", 0.8), alpha("#661100", 0.8)),
+           linetype = c(1,1,3,3), 
+           break.x.by = 5, ylim = c(0,1),
+           surv.median.line = "hv",
+           xlim = c(minage, maxage),
+           xlab = xlab, ylab = ylab,
+           title = outcome, font.title = c(size=12),
+           subtitle = " ", font.subtitle = c(size = 11),
+           font.x=c(size=12), font.y=c(size=12), font.tickslab = c(size = 12),
+           fun = "event", censor = F, legend = "none",
+           # legend.title = "", legend.labs = c("0 F", "3+ F", "0 M", "3+ M"),
+           # font.legend = c(size=12),
+           ggtheme=custom_theme())
+  return(plt)
+}
+
+## function to grab legend
+genLegend <- function(modellist, data, outcome, xlab, ylab, minage, maxage) {
+  plt <- ggsurvplot_combine(modellist, data = data, 
+          # palette = c("#888888D2", "#661100D2", tdgray, tdarkred),
+           palette = c(alpha("#888888", 0.7), alpha("#661100", 0.7), alpha("#888888", 0.8), alpha("#661100", 0.8)),
+           linetype = c(1,1,3,3), 
+           break.x.by = 5, ylim = c(0,1),
+           surv.median.line = "hv",
+           xlim = c(minage, maxage),
+           xlab = xlab, ylab = ylab,
+           title = outcome, font.title = c(size=14),
+           subtitle = " ", font.subtitle = c(size = 11),
+           font.x=c(size=12), font.y=c(size=12), font.tickslab = c(size = 12),
+           fun = "event", censor = F, 
+          # legend.position = "right",
+           legend.title = "Cumulative\nACEs", legend.labs = c("0 F", "3+ F", "0 M", "3+ M"),
+           font.legend = c(size=10),
+           ggtheme=custom_theme())
+           #  theme(
+           #   legend.key.spacing.y = unit(5, "pt")
+           # )) 
+  return(plt)
+  }
+```
+
+Combine survival curves (male and female)
+```{r beh sexes comb}
+tdarkred <- makeTransparent("#661100", 180)
+tdgray <- makeTransparent("#888888", 180)
+
+## SMOKING 
+#### F:
+surv_smokeF <- Surv(f_data[f_data$cumaces %in% c(0,3), ]$agesmoke, f_data[f_data$cumaces %in% c(0,3), ]$smokestatus) 
+survcurv1 <- survfit(surv_smokeF ~ cumaces_factor, data = f_data[f_data$cumaces %in% c(0,3), ]) 
+
+#### M:
+surv_smokeM <- Surv(m_data[m_data$cumaces %in% c(0,3), ]$agesmoke, m_data[m_data$cumaces %in% c(0,3), ]$smokestatus) 
+survcurv2 <- survfit(surv_smokeM ~ cumaces_factor, data = m_data[m_data$cumaces %in% c(0,3), ]) 
+
+smoke_surv_models <- list(survcurv1, survcurv2)
+
+
+## DRINKING 
+#### F:
+surv_drinkF <- Surv(f_data[f_data$cumaces %in% c(0,3), ]$agedrink, f_data[f_data$cumaces %in% c(0,3), ]$drinkstatus) 
+survcurv1 <- survfit(surv_drinkF ~ cumaces_factor, data = f_data[f_data$cumaces %in% c(0,3), ]) 
+
+#### M:
+surv_drinkM <- Surv(m_data[m_data$cumaces %in% c(0,3), ]$agedrink, m_data[m_data$cumaces %in% c(0,3), ]$drinkstatus) 
+survcurv2 <- survfit(surv_drinkM ~ cumaces_factor, data = m_data[m_data$cumaces %in% c(0,3), ]) 
+
+drink_surv_models <- list(survcurv1, survcurv2)
+
+## ROMANCE 
+#### F:
+surv_romF <- Surv(f_data[f_data$cumaces %in% c(0,3), ]$ageroman, f_data[f_data$cumaces %in% c(0,3), ]$romstatus) 
+survcurv1 <- survfit(surv_romF ~ cumaces_factor, data = f_data[f_data$cumaces %in% c(0,3), ]) 
+
+#### M:
+surv_romM <- Surv(m_data[m_data$cumaces %in% c(0,3), ]$ageroman, m_data[m_data$cumaces %in% c(0,3), ]$romstatus) 
+survcurv2 <- survfit(surv_romM ~ cumaces_factor, data = m_data[m_data$cumaces %in% c(0,3), ]) 
+
+rom_surv_models <- list(survcurv1, survcurv2)
+
+
+## SEX 
+#### F:
+surv_sexF <- Surv(f_data[f_data$cumaces %in% c(0,3), ]$age1stsex, f_data[f_data$cumaces %in% c(0,3), ]$sexstatus) 
+survcurv1 <- survfit(surv_sexF ~ cumaces_factor, data = f_data[f_data$cumaces %in% c(0,3), ]) 
+
+#### M:
+surv_sexM <- Surv(m_data[m_data$cumaces %in% c(0,3), ]$age1stsex, m_data[m_data$cumaces %in% c(0,3), ]$sexstatus) 
+survcurv2 <- survfit(surv_sexM ~ cumaces_factor, data = m_data[m_data$cumaces %in% c(0,3), ]) 
+
+sex_surv_models <- list(survcurv1, survcurv2)
+
+
+### get legend for multipanel figure
+legendplot <- genLegend(smoke_surv_models, data, "First smoke", xlab = " ", ylab = "Probability", minage = 10, maxage = 25)
+
+legendplot2 <- legendplot$plot + guides(color = guide_legend(ncol = 1, direction = "vertical"))
+
+# extract the legend from one of the plots
+legend <- ggpubr::get_legend(
+  legendplot2 + theme(legend.box.margin = margin(0, 0, 0, 18))
+)
+
+## or horizontal legend
+legendplot_h <- legendplot$plot + guides(color = guide_legend(ncol = 2))
+
+# extract the legend from one of the plots
+legend_h <- ggpubr::get_legend(
+  legendplot_h + theme(legend.box.margin = margin(0, 0, 10, 0))
+)
+```
+
+Generate plots
+```{r fig 4 plots}
+smokePlt <- genCombSurvPlots(smoke_surv_models, data, "First smoke", xlab = " ", ylab = "Probability", minage = 10, maxage = 25)
+drinkPlt <- genCombSurvPlots(drink_surv_models, data, outcome = "First drink", xlab = " ", ylab = " ", minage = 10, maxage = 25)
+romPlt <- genCombSurvPlots(rom_surv_models, data, "First relationship", xlab = "Age (years)", ylab = "Probability", minage = 10, maxage = 25)
+sexPlt <- genCombSurvPlots(sex_surv_models, data, "Sexual debut", xlab = "Age (years)", ylab = " ", minage = 15, maxage = 30)
+```
+
+Combine multipanel figure
+```{r fig 4}
+prows <- plot_grid(smokePlt$plot,
+          drinkPlt$plot,
+          romPlt$plot,
+          sexPlt$plot, 
+labels = "auto", byrow = T,
+label_size = 12,
+label_fontface = "plain",
+label_x = c(0.05))
+
+prows
+
+## combine with legend (on side)
+plot_grid(prows, legend, nrow = 1, ncol = 2, rel_widths = c(2,0.4))
+
+# ggsave('Figure4.pdf', width=16, height=13.3, units='cm',  pointsize = 8, dpi = 1600)
+
+```
